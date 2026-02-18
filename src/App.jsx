@@ -129,6 +129,8 @@ const STAR_COLORS = ["#7f8c8d","#aaa","#f8d76b","#ff9f43"];
 const FLASH_TIMES = [1, 2, 3, 5];
 const SESSION_SIZE = 5;
 const MAX_DAYS = 365;
+const SYNC_RETRY_MAX = 4;
+const AUTO_PULL_INTERVAL_MS = 20000;
 
 /* ================================================================
    CONFIRM DIALOG
@@ -146,6 +148,15 @@ function ConfirmDialog({ msg, sub, okLabel="OK", okColor="#ff7675", onOk, onCanc
       </div>
     </div>
   );
+}
+
+function stableStringify(v) {
+  if (Array.isArray(v)) return `[${v.map(stableStringify).join(",")}]`;
+  if (v && typeof v === "object") {
+    const keys = Object.keys(v).sort();
+    return `{${keys.map(k => `${JSON.stringify(k)}:${stableStringify(v[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(v);
 }
 
 /* ================================================================
@@ -390,15 +401,33 @@ export default function App() {
     return () => document.removeEventListener("visibilitychange", onFocus);
   }, [pull]);
 
+  /* 定期pull（別端末の変更を自動反映） */
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (document.visibilityState === "visible") pull();
+    }, AUTO_PULL_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [pull]);
+
   /* push helpers：変更後に即クラウド書き込み */
   const pushCustomSets = useCallback(async (nextOrUpdater) => {
     setSyncStatus("syncing");
     try {
-      const remoteRaw = await syncGet(SYNC_CUSTOM, syncWrap([]));
-      const remote = syncUnwrap(remoteRaw, []);
-      const next = typeof nextOrUpdater === "function" ? nextOrUpdater(remote) : nextOrUpdater;
-      await syncSet(SYNC_CUSTOM, syncWrap(next));
-      setCustomSetsState(next);
+      let committed = null;
+      for (let i = 0; i < SYNC_RETRY_MAX; i += 1) {
+        const remoteRaw = await syncGet(SYNC_CUSTOM, syncWrap([]));
+        const remote = syncUnwrap(remoteRaw, []);
+        const next = typeof nextOrUpdater === "function" ? nextOrUpdater(remote) : nextOrUpdater;
+        await syncSet(SYNC_CUSTOM, syncWrap(next));
+        const afterRaw = await syncGet(SYNC_CUSTOM, syncWrap([]));
+        const after = syncUnwrap(afterRaw, []);
+        if (stableStringify(after) === stableStringify(next)) {
+          committed = after;
+          break;
+        }
+      }
+      if (!committed) throw new Error("custom set sync conflict");
+      setCustomSetsState(committed);
       setSyncStatus("ok");
     } catch {
       setSyncStatus("error");
@@ -409,11 +438,21 @@ export default function App() {
   const pushPriority = useCallback(async (nextOrUpdater) => {
     setSyncStatus("syncing");
     try {
-      const remoteRaw = await syncGet(SYNC_PRIORITY, syncWrap({}));
-      const remote = syncUnwrap(remoteRaw, {});
-      const next = typeof nextOrUpdater === "function" ? nextOrUpdater(remote) : nextOrUpdater;
-      await syncSet(SYNC_PRIORITY, syncWrap(next));
-      setBuiltinPriority(next);
+      let committed = null;
+      for (let i = 0; i < SYNC_RETRY_MAX; i += 1) {
+        const remoteRaw = await syncGet(SYNC_PRIORITY, syncWrap({}));
+        const remote = syncUnwrap(remoteRaw, {});
+        const next = typeof nextOrUpdater === "function" ? nextOrUpdater(remote) : nextOrUpdater;
+        await syncSet(SYNC_PRIORITY, syncWrap(next));
+        const afterRaw = await syncGet(SYNC_PRIORITY, syncWrap({}));
+        const after = syncUnwrap(afterRaw, {});
+        if (stableStringify(after) === stableStringify(next)) {
+          committed = after;
+          break;
+        }
+      }
+      if (!committed) throw new Error("priority sync conflict");
+      setBuiltinPriority(committed);
       setSyncStatus("ok");
     } catch {
       setSyncStatus("error");
@@ -504,7 +543,11 @@ export default function App() {
   };
 
   const addCustomSet = async (s) => {
-    await pushCustomSets(prev => [...prev, s]);
+    const nextSet = { ...s, updatedAt: Date.now() };
+    await pushCustomSets(prev => {
+      const withoutSameId = prev.filter(x => x.id !== nextSet.id);
+      return [...withoutSameId, nextSet];
+    });
   };
 
   /* ================================================================
