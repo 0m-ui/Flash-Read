@@ -9,6 +9,7 @@ import collocationsData from "./data/collocations.json";
 ================================================================ */
 const SYNC_CUSTOM   = "fr_custom_v7";      // カスタムセット（全端末共有）
 const SYNC_PRIORITY = "fr_priority_v7";    // ★優先度上書き（全端末共有）
+const SYNC_OVERRIDES = "fr_overrides_v7";  // 組み込みセット編集上書き（全端末共有）
 const SYNC_RECORDS  = "fr_records_v7";     // 学習履歴（全端末共有）
 const SYNC_SRS      = "fr_srs_v7";         // SRS（全端末共有）
 const LOCAL_ACCOUNT = "fr_account_v7";
@@ -303,6 +304,7 @@ export default function App() {
   /* ── 同期対象データ（cloud shared） ───────────────────────────── */
   const [customSets,     setCustomSetsState]   = useState([]);
   const [builtinPriority,setBuiltinPriority]   = useState({});
+  const [setOverrides,   setSetOverrides]      = useState({});
   const [syncStatus,     setSyncStatus]        = useState("idle"); // idle|syncing|ok|error
   const [syncReady,      setSyncReady]         = useState(false);  // 初回ロード完了フラグ
 
@@ -319,6 +321,7 @@ export default function App() {
 
   /* ── 画面・ゲーム状態 ─────────────────────────────────────────── */
   const [screen,      setScreen]      = useState("home");
+  const [editingSet,  setEditingSet]  = useState(null);
   const [datasetKey,  setDatasetKey]  = useState("words");
   const [flashTime,   setFlashTime]   = useState(3);
   const [filterStar,  setFilterStar]  = useState(3);
@@ -351,9 +354,10 @@ export default function App() {
   const pull = useCallback(async () => {
     setSyncStatus("syncing");
     try {
-      const [csRaw, bpRaw, recRaw, srsRaw] = await Promise.all([
+      const [csRaw, bpRaw, ovRaw, recRaw, srsRaw] = await Promise.all([
         syncGet(SYNC_CUSTOM,   null),
         syncGet(SYNC_PRIORITY, null),
+        syncGet(SYNC_OVERRIDES, null),
         syncGet(SYNC_RECORDS,  null),
         syncGet(SYNC_SRS,      null),
       ]);
@@ -367,6 +371,7 @@ export default function App() {
       };
       const cs = syncUnwrap(csRaw, []);
       const bp = syncUnwrap(bpRaw, {});
+      const ov = syncUnwrap(ovRaw, {});
       const recByAcct = recRaw ? { child: [], parent: [], ...syncUnwrap(recRaw, {}) } : localRecByAcct;
       const srsByAcct = srsRaw ? { child: {}, parent: {}, ...syncUnwrap(srsRaw, {}) } : localSrsByAcct;
 
@@ -377,6 +382,7 @@ export default function App() {
 
       setCustomSetsState(cs);
       setBuiltinPriority(bp);
+      setSetOverrides(ov);
       setRecordsState(recByAcct[account] || []);
       setSrsState(srsByAcct[account] || {});
       setSyncStatus("ok");
@@ -460,6 +466,31 @@ export default function App() {
     setTimeout(() => setSyncStatus(s => s === "ok" ? "idle" : s), 2500);
   }, []);
 
+  const pushSetOverrides = useCallback(async (nextOrUpdater) => {
+    setSyncStatus("syncing");
+    try {
+      let committed = null;
+      for (let i = 0; i < SYNC_RETRY_MAX; i += 1) {
+        const remoteRaw = await syncGet(SYNC_OVERRIDES, syncWrap({}));
+        const remote = syncUnwrap(remoteRaw, {});
+        const next = typeof nextOrUpdater === "function" ? nextOrUpdater(remote) : nextOrUpdater;
+        await syncSet(SYNC_OVERRIDES, syncWrap(next));
+        const afterRaw = await syncGet(SYNC_OVERRIDES, syncWrap({}));
+        const after = syncUnwrap(afterRaw, {});
+        if (stableStringify(after) === stableStringify(next)) {
+          committed = after;
+          break;
+        }
+      }
+      if (!committed) throw new Error("override sync conflict");
+      setSetOverrides(committed);
+      setSyncStatus("ok");
+    } catch {
+      setSyncStatus("error");
+    }
+    setTimeout(() => setSyncStatus(s => s === "ok" ? "idle" : s), 2500);
+  }, []);
+
   /* ================================================================
      ACCOUNT
   ================================================================ */
@@ -510,9 +541,21 @@ export default function App() {
     });
   }, [account, syncReady, updateSyncedPerAccount]);
 
-  const baseSets = useMemo(
+  const seedSets = useMemo(
     () => normalizeSourceSets(datasetKey, DATASET_SOURCES[datasetKey]?.data),
     [datasetKey]
+  );
+  const baseSets = useMemo(
+    () => seedSets.map((s) => {
+      const ov = setOverrides[s.id];
+      if (!ov) return s;
+      return {
+        ...s,
+        ...ov,
+        items: Array.isArray(ov.items) ? ov.items : s.items,
+      };
+    }),
+    [seedSets, setOverrides]
   );
 
   /* ================================================================
@@ -548,6 +591,24 @@ export default function App() {
       const withoutSameId = prev.filter(x => x.id !== nextSet.id);
       return [...withoutSameId, nextSet];
     });
+  };
+
+  const saveEditedSet = async (next) => {
+    const payload = {
+      mode: next.mode,
+      owner: next.owner,
+      priority: next.priority,
+      label: next.label,
+      items: next.items,
+      updatedAt: Date.now(),
+    };
+    if (seedSets.find(x => x.id === next.id)) {
+      await pushSetOverrides(prev => ({ ...prev, [next.id]: { ...(prev[next.id] || {}), ...payload } }));
+    } else {
+      await pushCustomSets(prev => prev.map(s => s.id === next.id ? { ...s, ...payload } : s));
+    }
+    setEditingSet(null);
+    setScreen("admin");
   };
 
   /* ================================================================
@@ -971,6 +1032,7 @@ export default function App() {
                             <button key={p} onClick={()=>updatePriority(s.id,p)} style={{background:s.priority===p?STAR_COLORS[p]:"rgba(255,255,255,.06)",border:"none",borderRadius:7,padding:"3px 8px",fontSize:10,fontWeight:800,cursor:"pointer",color:s.priority===p?"#0d0b1e":"rgba(255,255,255,.38)"}}>{STAR_LABELS[p]}</button>
                           ))}
                         </div>
+                        <button onClick={()=>{ setEditingSet({ ...s, items:[...s.items] }); setScreen("editset"); }} style={{background:"none",border:"1px solid rgba(255,255,255,.2)",color:"rgba(255,255,255,.65)",cursor:"pointer",fontSize:11,padding:"2px 7px",borderRadius:8}}>✎</button>
                         <button onClick={()=>deleteSet(s)} style={{background:"none",border:"none",color:"rgba(255,110,110,.55)",cursor:"pointer",fontSize:13,padding:"0 2px",lineHeight:1}}>✕</button>
                       </div>
                     );
@@ -1007,18 +1069,36 @@ export default function App() {
     );
   }
 
+  if (screen === "editset" && account === "parent" && editingSet) {
+    return (
+      <AddSetScreen
+        key={`edit-${editingSet.id}`}
+        allSets={allSets}
+        cardSt={cardSt}
+        rootSt={rootSt}
+        accountBar={accountBar}
+        dlg={dlg}
+        confirm={confirm}
+        initialSet={editingSet}
+        onSave={saveEditedSet}
+        onClose={() => { setEditingSet(null); setScreen("admin"); }}
+      />
+    );
+  }
+
   return <div style={rootSt}>{accountBar}{dlg&&<ConfirmDialog {...dlg}/>}</div>;
 }
 
 /* ================================================================
    ADD SET SCREEN（重複チェック付き）
 ================================================================ */
-function AddSetScreen({ allSets, cardSt, rootSt, accountBar, dlg, confirm, onAdd }) {
-  const [label,    setLabel]    = useState("");
-  const [mode,     setMode]     = useState("collocation");
-  const [owner,    setOwner]    = useState("child");
-  const [priority, setPriority] = useState(2);
-  const [rawItems, setRawItems] = useState("");
+function AddSetScreen({ allSets, cardSt, rootSt, accountBar, dlg, confirm, onAdd, initialSet=null, onSave=null, onClose=null }) {
+  const isEdit = Boolean(initialSet && onSave);
+  const [label,    setLabel]    = useState(initialSet?.label || "");
+  const [mode,     setMode]     = useState(initialSet?.mode || "collocation");
+  const [owner,    setOwner]    = useState(initialSet?.owner || "child");
+  const [priority, setPriority] = useState(initialSet?.priority ?? 2);
+  const [rawItems, setRawItems] = useState(Array.isArray(initialSet?.items) ? initialSet.items.join("\n") : "");
   const [status,   setStatus]   = useState(null);
   const [saving,   setSaving]   = useState(false);
 
@@ -1029,10 +1109,11 @@ function AddSetScreen({ allSets, cardSt, rootSt, accountBar, dlg, confirm, onAdd
 
     /* 重複チェック */
     const norm = s => s.toLowerCase().trim();
-    const dupLabel = allSets.find(s => s.label.trim() === label.trim());
+    const dupLabel = allSets.find(s => s.id !== initialSet?.id && s.label.trim() === label.trim());
     const dupItems = [];
     items.forEach(item => {
       allSets.forEach(s => {
+        if (s.id === initialSet?.id) return;
         if (s.items.some(x => norm(x) === norm(item))) dupItems.push({item, inSet:s.label});
       });
     });
@@ -1049,6 +1130,13 @@ function AddSetScreen({ allSets, cardSt, rootSt, accountBar, dlg, confirm, onAdd
     }
 
     setSaving(true);
+    if (isEdit) {
+      await onSave({ ...initialSet, mode, owner, priority, label:label.trim(), items });
+      setSaving(false);
+      setStatus({type:"ok", msg:`「${label.trim()}」を更新しました（全端末に同期）`});
+      setTimeout(() => { setStatus(null); onClose?.(); }, 700);
+      return;
+    }
     await onAdd({ id:"custom_"+uid(), mode, owner, priority, label:label.trim(), items });
     setSaving(false);
     setStatus({type:"ok", msg:`「${label.trim()}」を追加しました（全端末に同期）`});
@@ -1062,8 +1150,8 @@ function AddSetScreen({ allSets, cardSt, rootSt, accountBar, dlg, confirm, onAdd
     <div style={rootSt}>{accountBar}
       {dlg && <ConfirmDialog {...dlg}/>}
       <div style={{...cardSt,maxWidth:520}}>
-        <div style={{fontSize:20,fontWeight:900,textAlign:"center",marginBottom:4}}>＋ セット追加</div>
-        <div style={{fontSize:10,opacity:.35,textAlign:"center",marginBottom:16}}>☁ 追加後、全端末に自動同期されます</div>
+        <div style={{fontSize:20,fontWeight:900,textAlign:"center",marginBottom:4}}>{isEdit?"✎ セット編集":"＋ セット追加"}</div>
+        <div style={{fontSize:10,opacity:.35,textAlign:"center",marginBottom:16}}>☁ {isEdit?"更新後":"追加後"}、全端末に自動同期されます</div>
 
         <div style={{marginBottom:11}}>
           <div style={{fontSize:10,opacity:.38,marginBottom:5}}>セット名</div>
@@ -1111,9 +1199,13 @@ function AddSetScreen({ allSets, cardSt, rootSt, accountBar, dlg, confirm, onAdd
         )}
 
         <Btn color="#7ee8a2" onClick={handleAdd} style={{opacity:saving?.6:1}}>
-          {saving?"☁ 同期中…":"✓ このセットを追加"}
+          {saving?"☁ 同期中…":isEdit?"✓ このセットを更新":"✓ このセットを追加"}
         </Btn>
-        <Btn ghost onClick={()=>{setLabel("");setRawItems("");setStatus(null);}} style={{marginTop:7}}>↺ クリア</Btn>
+        {isEdit ? (
+          <Btn ghost onClick={onClose} style={{marginTop:7}}>↩ 戻る</Btn>
+        ) : (
+          <Btn ghost onClick={()=>{setLabel("");setRawItems("");setStatus(null);}} style={{marginTop:7}}>↺ クリア</Btn>
+        )}
       </div>
     </div>
   );
