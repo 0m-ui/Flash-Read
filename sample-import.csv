@@ -1,0 +1,15 @@
+level,owner,importance,note,item1,item2,item3,item4,item5
+chunk,shared,3,-ight family,ight,night,light,right,bright
+chunk,shared,3,re- prefix,re-,rewrite,replay,return,review
+chunk,shared,3,-tion suffix,-tion,action,station,nation,fiction
+chunk,shared,2,pre- prefix,pre-,preview,prepare,predict,prevent
+chunk,shared,2,un- prefix,un-,unhappy,unlike,unlock,unknown
+collocation,shared,3,原因・理由,because of,due to,owing to,as a result,therefore
+collocation,shared,3,目的・条件,in order to,so as to,so that,in case,unless
+collocation,shared,3,逆接・対比,on the other hand,in contrast,however,although,despite
+collocation,shared,3,追加・補足,in addition,furthermore,moreover,as well as,not only
+collocation,shared,3,重要フレーズ動詞,make sure,find out,give up,take part,look forward to
+collocation,shared,2,学習コロケーション,pay attention,make progress,take notes,do research,ask questions
+sentence,shared,3,基本文型,She reads every night.,He wrote a long letter.,They play in the bright light.,We returned right away.,I need to rewrite this.
+sentence,shared,3,コロケーション文,Because of the rain we stayed inside.,She made sure to lock the door.,In addition he took careful notes.,As a result they won the game.,I look forward to reading more.
+sentence,shared,2,準二級読解文,The endless darkness made her hopeless.,Despite the rain the nation celebrated.,Furthermore the preview was amazing.,She was proud of her achievement.,Pay attention to the main argument.

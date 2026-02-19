@@ -1,0 +1,37 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // ── Users (profile) ──────────────────────────────────────────
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow write: if isOwner(userId);
+    }
+
+    // ── WordSets (shared) ─────────────────────────────────────────
+    match /wordSets/shared/sets/{setId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn();
+    }
+
+    // ── WordSets (per user) ───────────────────────────────────────
+    match /wordSets/{userId}/sets/{setId} {
+      allow read: if isSignedIn();
+      allow write: if isOwner(userId);
+    }
+
+    // ── Records ───────────────────────────────────────────────────
+    match /records/{userId} {
+      allow read: if isSignedIn(); // anyone can read (for cross-check)
+      allow write: if isOwner(userId);
+    }
+  }
+}

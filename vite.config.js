@@ -1,8 +1,18 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-// https://vite.dev/config/
 export default defineConfig({
-  plugins: [react()],
   base: '/Flash-Read/',
+  plugins: [react()],
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          firebaseAuth: ['firebase/app', 'firebase/auth'],
+          firebaseStore: ['firebase/firestore'],
+          xlsx: ['xlsx']
+        }
+      }
+    }
+  }
 })
